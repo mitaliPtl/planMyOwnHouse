@@ -1,0 +1,331 @@
+// planMyOwnHouse — Phase 1-4 schema (auth, profile, project shell, plot/rooms/plan
+// generation). Later phases (Elevation, Estimate, ...) add new models/migrations
+// without altering the shape of what's defined here.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RoleName {
+  SUPER_ADMIN
+  CUSTOMER
+}
+
+// Normalized table (not a plain enum column on User) so future permission/
+// feature-flag joins don't require an enum migration.
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        RoleName @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  email         String    @unique
+  emailVerified DateTime?
+  passwordHash  String? // null for OAuth-only users
+  fullName      String
+  mobile        String?
+  roleId        String    @db.Uuid
+  role          Role      @relation(fields: [roleId], references: [id])
+  isActive      Boolean   @default(true)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts            Account[]
+  sessions            Session[]
+  customerProfile     CustomerProfile?
+  passwordResetTokens PasswordResetToken[]
+  auditLogs           AuditLog[]
+  projects            Project[]
+
+  @@index([roleId])
+  @@map("users")
+}
+
+// Standard Auth.js PrismaAdapter shape — field names must match exactly.
+model Account {
+  id                String  @id @default(uuid()) @db.Uuid
+  userId            String  @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+// Required for Auth.js PrismaAdapter schema compatibility (OAuth account linking).
+// Not actively written to while the JWT session strategy is active — see
+// src/server/auth/auth.ts for the strategy rationale. Kept for future migration to
+// database sessions, not dead code.
+model Session {
+  id           String   @id @default(uuid()) @db.Uuid
+  sessionToken String   @unique
+  userId       String   @db.Uuid
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// Email verification tokens (Auth.js adapter shape). `token` stores the SHA-256 hash
+// of the value emailed to the user — the raw token is never persisted.
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique // SHA-256 of the emailed token, never raw
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model CustomerProfile {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @unique @db.Uuid
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  state          String?
+  postalCode     String?
+  country        String?
+  alternatePhone String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("customer_profiles")
+}
+
+enum ProjectStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  ARCHIVED
+}
+
+// Phase 3 scope: project shell only (name/location/status). Plot, RoomType, Plan,
+// Elevation, Estimate, etc. attach to this via their own models in later phases —
+// this model's shape should not need to change when they land.
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  customerId  String        @db.Uuid
+  name        String
+  description String?
+  location    String?
+  state       String?
+  city        String?
+  country     String?
+  address     String?
+  notes       String?
+  status      ProjectStatus @default(DRAFT)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  plot               Plot?
+  projectRooms       ProjectRoom[]
+  plans              Plan[]
+  planGenerationJobs PlanGenerationJob[]
+
+  @@index([customerId])
+  @@index([customerId, status])
+  @@map("projects")
+}
+
+enum PlotUnit {
+  FEET
+  METER
+  YARD
+}
+
+// 1:1 with Project. All dimension/setback fields share the plot's own `unit` — no
+// cross-unit normalization needed since everything is relative within one plot.
+model Plot {
+  id                String   @id @default(uuid()) @db.Uuid
+  projectId         String   @unique @db.Uuid
+  width             Float
+  length            Float
+  unit              PlotUnit @default(FEET)
+  floors            Int      @default(1)
+  roadSide          String? // e.g. "North" — which plot edge faces the road
+  mainDoorDirection String? // e.g. "North" — which plot edge the main entrance faces
+  frontSetback      Float    @default(0)
+  rearSetback       Float    @default(0)
+  leftSetback       Float    @default(0)
+  rightSetback      Float    @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("plots")
+}
+
+// Admin-configurable in Phase 8 (CRUD not built yet — rows are seeded). Room types are
+// intentionally not hardcoded into UI components; the Requirements/Room Settings step
+// reads this table.
+model RoomType {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String   @unique
+  slug          String   @unique
+  minWidth      Float
+  minLength     Float
+  defaultWidth  Float
+  defaultLength Float
+  isActive      Boolean  @default(true)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  projectRooms ProjectRoom[]
+
+  @@map("room_types")
+}
+
+// A selected room type instance for a project, with its configured dimensions —
+// combines the spec's separate "Requirements" (which room types) and "Room Settings"
+// (per-room dimensions) wizard steps into one model/step. See docs/roadmap.md for the
+// rationale.
+model ProjectRoom {
+  id               String   @id @default(uuid()) @db.Uuid
+  projectId        String   @db.Uuid
+  roomTypeId       String   @db.Uuid
+  quantity         Int      @default(1)
+  width            Float
+  length           Float
+  attachedBathroom Boolean  @default(false)
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  roomType RoomType @relation(fields: [roomTypeId], references: [id])
+
+  @@index([projectId])
+  @@map("project_rooms")
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// Real consumer of the server/jobs abstraction (see src/server/jobs/README.md):
+// producers (PlanService) call jobQueue.enqueue() to create a row here; status
+// transitions during processing go through this table directly (the way a real
+// worker would too). Processing currently happens inline in the same request, since
+// no queue/worker infra exists yet (BullMQ/Redis is Phase 10) — but the row shape and
+// status lifecycle are what a real async worker would read/write, so swapping in a
+// real queue later doesn't change this schema.
+model PlanGenerationJob {
+  id        String    @id @default(uuid()) @db.Uuid
+  projectId String    @db.Uuid
+  planId    String?   @db.Uuid
+  status    JobStatus @default(QUEUED)
+  payload   Json
+  error     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  plan    Plan?   @relation(fields: [planId], references: [id])
+
+  @@index([projectId])
+  @@map("plan_generation_jobs")
+}
+
+// Each successful generation creates a new Plan row — `version` is the versioning
+// mechanism (spec §41) rather than a separate PlanVersion model. Only successful
+// generations produce a Plan; failed attempts live solely as a FAILED
+// PlanGenerationJob with no associated Plan.
+//
+// `layoutData` holds the structured plan (rooms/walls/doors/windows with positions —
+// see src/server/plan-engine/types.ts for the shape) as JSON rather than normalized
+// Wall/Door/Window/Staircase tables. The only consumer is the 2D viewer/future 3D
+// engine rendering the whole layout at once — there's no case yet for querying/
+// admin-editing individual walls independently of their plan, so normalizing further
+// would add migration overhead without a real use. Revisit if that changes.
+model Plan {
+  id         String   @id @default(uuid()) @db.Uuid
+  projectId  String   @db.Uuid
+  version    Int
+  layoutData Json
+  warnings   Json?
+  createdAt  DateTime @default(now())
+
+  project Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  jobs    PlanGenerationJob[]
+
+  @@index([projectId])
+  @@map("plans")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @db.Uuid
+  action     String // "USER_SIGNUP" | "LOGIN_SUCCESS" | "PASSWORD_RESET_COMPLETED" | ...
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid()) @db.Uuid
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
