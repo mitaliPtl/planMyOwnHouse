@@ -1,0 +1,19 @@
+# Downloaded dataset and derived artifacts — re-run data/download.py to repopulate.
+data/
+
+# Trained weights — large, and not reproducible-by-diff; keep them in Drive, not git.
+checkpoints/
+*.pt
+*.pth
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Colab sometimes materializes this locally when Drive is mounted
+drive/

@@ -1,0 +1,13 @@
+# Colab ships a preinstalled torch build matched to its CUDA driver — do NOT pin
+# torch here, installing a different version on top is what usually breaks the GPU.
+# Install torch-geometric against whatever torch is already present instead.
+torch-geometric>=2.5
+networkx>=3.0
+shapely>=2.0
+geopandas>=0.14
+numpy>=1.26
+pandas>=2.0
+matplotlib>=3.8
+Pillow>=10.0
+tqdm>=4.66
+requests>=2.31
