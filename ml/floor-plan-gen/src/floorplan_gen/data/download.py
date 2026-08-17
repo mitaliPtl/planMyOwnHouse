@@ -1,11 +1,12 @@
 """Fetches the ResPlan dataset and its loading utilities.
 
-ResPlan (https://github.com/m-agour/ResPlan) ships its data as GitHub release
-assets rather than a fixed, guessable URL, so asset URLs are discovered through
-the GitHub releases API instead of being hardcoded here — hardcoding a filename
-that later changes would fail silently-ish (a 404 deep in a download call) rather
-than clearly. If discovery ever fails, this raises with the exact list of asset
-names it did find, so a stale filename pattern is easy to diagnose and fix.
+Only `ResPlan.zip` (the ~17k-plan pickle, too big for a normal git blob) is a
+GitHub *release* asset — its exact filename is discovered through the releases
+API rather than hardcoded, since a stale hardcoded name would fail with a
+confusing 404 deep in a download call instead of a clear error. `split.json`
+and `resplan_utils.py` are ordinary files checked into the repo root (verified
+against the repo's actual contents, not assumed), so those are fetched directly
+via raw.githubusercontent.com like any other repo file.
 
 Usage:
     python -m floorplan_gen.data.download --dest data/
@@ -22,7 +23,9 @@ import requests
 
 REPO = "m-agour/ResPlan"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
-UTILS_RAW_URL = f"https://raw.githubusercontent.com/{REPO}/main/resplan_utils.py"
+RAW_BASE = f"https://raw.githubusercontent.com/{REPO}/main"
+UTILS_RAW_URL = f"{RAW_BASE}/resplan_utils.py"
+SPLIT_RAW_URL = f"{RAW_BASE}/split.json"
 
 
 def _download(url: str, dest: Path) -> None:
@@ -67,6 +70,10 @@ def download_resplan(dest: Path, *, force: bool = False) -> Path:
     if force or not utils_path.exists():
         _download(UTILS_RAW_URL, utils_path)
 
+    split_path = dest / "split.json"
+    if force or not split_path.exists():
+        _download(SPLIT_RAW_URL, split_path)
+
     resp = requests.get(RELEASES_API, timeout=30)
     resp.raise_for_status()
     release = resp.json()
@@ -88,11 +95,6 @@ def download_resplan(dest: Path, *, force: bool = False) -> Path:
                     f"Expected a single .pkl inside {asset['name']}, found: "
                     f"{[p.name for p in extracted_pkls]}. Inspect the zip contents manually."
                 )
-
-    split_path = dest / "split.json"
-    if force or not split_path.exists():
-        asset = _find_asset(assets, name_contains="split", suffix=".json")
-        _download(asset["browser_download_url"], split_path)
 
     return dest
 
