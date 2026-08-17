@@ -61,13 +61,30 @@ def _load_resplan_utils(utils_path: Path):
     return module
 
 
-def _rasterize_boundary(boundary_norm_coords: np.ndarray, size: int = BOUNDARY_MASK_SIZE) -> np.ndarray:
-    """Rasterizes a polygon (already normalized to [0, 1]) into a `size x size`
-    binary mask, 1.0 inside the building footprint."""
+def _rasterize_boundary(parts_norm_coords: list, size: int = BOUNDARY_MASK_SIZE) -> np.ndarray:
+    """Rasterizes one or more polygon rings (already normalized to [0, 1]) into a
+    `size x size` binary mask, 1.0 inside the building footprint. Takes a list of
+    rings (not a single ring) because ResPlan's `plan["inner"]` boundary is
+    sometimes a MultiPolygon — a disjoint/multi-wing footprint — and every part
+    should show up in the mask, not just one."""
     img = Image.new("L", (size, size), 0)
-    pixel_coords = [(x * (size - 1), y * (size - 1)) for x, y in boundary_norm_coords]
-    ImageDraw.Draw(img).polygon(pixel_coords, fill=1)
+    draw = ImageDraw.Draw(img)
+    for coords in parts_norm_coords:
+        pixel_coords = [(x * (size - 1), y * (size - 1)) for x, y in coords]
+        draw.polygon(pixel_coords, fill=1)
     return np.array(img, dtype=np.float32)
+
+
+def _polygon_rings(geom):
+    """Yields each part's exterior coordinate ring — handles both a plain Polygon
+    and a MultiPolygon boundary (ResPlan has both)."""
+    if geom.geom_type == "Polygon":
+        yield geom.exterior.coords
+    elif geom.geom_type == "MultiPolygon":
+        for part in geom.geoms:
+            yield part.exterior.coords
+    else:
+        raise ValueError(f"Unexpected boundary geometry type: {geom.geom_type!r}")
 
 
 def _normalize_box(minx: float, miny: float, maxx: float, maxy: float, bounds: tuple[float, float, float, float]):
@@ -98,8 +115,11 @@ def plan_to_pyg_data(plan: dict[str, Any], resplan_utils) -> Data | None:
         return None
     bounds = boundary.bounds  # (minx, miny, maxx, maxy)
     bw, bh = (bounds[2] - bounds[0]) or 1.0, (bounds[3] - bounds[1]) or 1.0
-    boundary_norm = [((x - bounds[0]) / bw, (y - bounds[1]) / bh) for x, y in boundary.exterior.coords]
-    boundary_mask = torch.from_numpy(_rasterize_boundary(np.array(boundary_norm)))
+    boundary_norm_parts = [
+        [((x - bounds[0]) / bw, (y - bounds[1]) / bh) for x, y in ring]
+        for ring in _polygon_rings(boundary)
+    ]
+    boundary_mask = torch.from_numpy(_rasterize_boundary(boundary_norm_parts))
 
     room_type_ids: list[int] = []
     target_boxes: list[list[float]] = []
@@ -175,7 +195,7 @@ def build_query_sample(
     minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
     bw, bh = (maxx - minx) or 1.0, (maxy - miny) or 1.0
     boundary_norm = [((x - minx) / bw, (y - miny) / bh) for x, y in boundary_coords]
-    boundary_mask = torch.from_numpy(_rasterize_boundary(np.array(boundary_norm)))
+    boundary_mask = torch.from_numpy(_rasterize_boundary([boundary_norm]))
 
     room_type_ids = [ROOM_TYPE_TO_ID.get(t, UNKNOWN_ROOM_TYPE_ID) for t in room_types]
 
