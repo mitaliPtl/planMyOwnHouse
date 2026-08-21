@@ -99,6 +99,23 @@ def _separate_overlaps(boxes: np.ndarray, iterations: int = 100) -> tuple[np.nda
     return boxes, False
 
 
+def _shrink_toward_center(boxes: np.ndarray, factor: float) -> np.ndarray:
+    """Scales every box by `factor` around its own center. Used as a fallback
+    when pure translation can't separate everything — e.g. the model predicted
+    rooms that are collectively too large to tile into the boundary without
+    resizing, so no amount of pushing alone can ever fully separate them.
+    Shrinking opens up gaps between previously-touching/overlapping boxes for
+    `_separate_overlaps` to work with, without changing the overall layout."""
+    boxes = boxes.copy()
+    cx = boxes[:, 0] + boxes[:, 2] / 2
+    cy = boxes[:, 1] + boxes[:, 3] / 2
+    boxes[:, 2] *= factor
+    boxes[:, 3] *= factor
+    boxes[:, 0] = cx - boxes[:, 2] / 2
+    boxes[:, 1] = cy - boxes[:, 3] / 2
+    return boxes
+
+
 def _count_overlaps(boxes: np.ndarray) -> int:
     n = len(boxes)
     count = 0
@@ -113,10 +130,15 @@ def _count_overlaps(boxes: np.ndarray) -> int:
     return count
 
 
-def cleanup_boxes(raw_boxes: np.ndarray, rounds: int = 3) -> tuple[np.ndarray, list[str]]:
+def cleanup_boxes(raw_boxes: np.ndarray, rounds: int = 3, max_shrink_attempts: int = 6) -> tuple[np.ndarray, list[str]]:
     """Alternates clip-to-boundary and overlap-separation, since separating two
-    boxes can push one back out of bounds. Returns the cleaned boxes plus any
-    warnings about overlaps that couldn't be fully resolved."""
+    boxes can push one back out of bounds. If pure translation still can't fully
+    separate everything after `rounds` attempts — which can happen when the
+    model's predicted room sizes are collectively too large to tile into the
+    boundary without resizing, a case translation alone can never resolve —
+    falls back to shrinking every box slightly around its own center and
+    retrying, up to `max_shrink_attempts` times, before giving up and reporting
+    whatever overlap remains. Returns the cleaned boxes plus any warnings."""
     boxes = raw_boxes.copy()
     resolved = False
     for _ in range(rounds):
@@ -124,6 +146,14 @@ def cleanup_boxes(raw_boxes: np.ndarray, rounds: int = 3) -> tuple[np.ndarray, l
         boxes, resolved = _separate_overlaps(boxes)
         if resolved:
             break
+
+    shrink_attempts = 0
+    while not resolved and shrink_attempts < max_shrink_attempts:
+        boxes = _shrink_toward_center(boxes, factor=0.92)
+        boxes = _clip_to_unit_square(boxes)
+        boxes, resolved = _separate_overlaps(boxes)
+        shrink_attempts += 1
+
     boxes = _clip_to_unit_square(boxes)
 
     warnings: list[str] = []
