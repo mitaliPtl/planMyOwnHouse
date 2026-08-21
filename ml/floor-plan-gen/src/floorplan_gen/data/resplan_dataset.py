@@ -106,7 +106,14 @@ def plan_to_pyg_data(plan: dict[str, Any], resplan_utils) -> Data | None:
     graph = resplan_utils.plan_to_graph(plan)
     graph = resplan_utils.add_adjacency_edges(graph)
 
-    node_ids = list(graph.nodes)
+    # ResPlan's graph also includes connector nodes like "front_door" (a door
+    # threshold, not a room — confirmed empirically: it showed up sized like a
+    # doorway and got mis-treated as a room to box-regress and overlap-check,
+    # which is wrong and pollutes both training signal and validity checks).
+    # Room type membership is the only thing that decides whether a node is kept
+    # — everything outside ROOM_TYPES (front_door, and anything else that isn't
+    # a real room) is dropped from the graph entirely, not mapped to "unknown".
+    node_ids = [n for n in graph.nodes if graph.nodes[n].get("type", "") in ROOM_TYPE_TO_ID]
     if len(node_ids) == 0:
         return None
 
@@ -126,31 +133,20 @@ def plan_to_pyg_data(plan: dict[str, Any], resplan_utils) -> Data | None:
     room_names: list[str] = []
     node_index = {node_id: i for i, node_id in enumerate(node_ids)}
 
-    seen_unknown_room_type = False
     for node_id in node_ids:
         attrs = graph.nodes[node_id]
-        room_type = attrs.get("type", "")
-        type_id = ROOM_TYPE_TO_ID.get(room_type, UNKNOWN_ROOM_TYPE_ID)
-        if type_id == UNKNOWN_ROOM_TYPE_ID:
-            seen_unknown_room_type = True
-        room_type_ids.append(type_id)
+        room_type_ids.append(ROOM_TYPE_TO_ID[attrs["type"]])  # guaranteed present, see the filter above
 
         geom = attrs["geometry"]
         target_boxes.append(list(_normalize_box(*geom.bounds, bounds=bounds)))
         room_names.append(str(node_id))
 
-    if seen_unknown_room_type:
-        warnings.warn(
-            "Encountered a room type outside ROOM_TYPES — mapped to the unknown "
-            "bucket. If this happens often, ROOM_TYPES is out of date with "
-            "resplan_utils.CATEGORY_COLORS.",
-            stacklevel=2,
-        )
-
     edge_src: list[int] = []
     edge_dst: list[int] = []
     edge_type_ids: list[int] = []
     for u, v, edge_attrs in graph.edges(data=True):
+        if u not in node_index or v not in node_index:
+            continue  # touches a dropped connector node (front_door, etc.) — skip
         edge_type = edge_attrs.get("type", "")
         type_id = EDGE_TYPE_TO_ID.get(edge_type, UNKNOWN_EDGE_TYPE_ID)
         # Undirected graph -> both directions, so message passing sees symmetric edges.
