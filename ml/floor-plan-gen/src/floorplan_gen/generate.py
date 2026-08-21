@@ -48,11 +48,17 @@ def load_model(checkpoint_path: str, device: torch.device | None = None) -> Room
 
 
 def _clip_to_unit_square(boxes: np.ndarray) -> np.ndarray:
+    """Keeps every box inside [0, 1] by SLIDING it back into bounds, not by
+    shrinking it. Clamping width/height from remaining-space-after-position
+    (the original approach) silently squashes a box toward zero size whenever
+    separation pushes it near an edge — a technically-valid but useless
+    "resolution" (a bathroom with zero width isn't a bathroom). Width/height are
+    only ever clamped down if they genuinely exceed the whole [0, 1] extent."""
     boxes = boxes.copy()
-    boxes[:, 0] = np.clip(boxes[:, 0], 0.0, 1.0)
-    boxes[:, 1] = np.clip(boxes[:, 1], 0.0, 1.0)
-    boxes[:, 2] = np.clip(boxes[:, 2], 1e-3, 1.0 - boxes[:, 0])
-    boxes[:, 3] = np.clip(boxes[:, 3], 1e-3, 1.0 - boxes[:, 1])
+    boxes[:, 2] = np.clip(boxes[:, 2], 1e-3, 1.0)
+    boxes[:, 3] = np.clip(boxes[:, 3], 1e-3, 1.0)
+    boxes[:, 0] = np.clip(boxes[:, 0], 0.0, 1.0 - boxes[:, 2])
+    boxes[:, 1] = np.clip(boxes[:, 1], 0.0, 1.0 - boxes[:, 3])
     return boxes
 
 
