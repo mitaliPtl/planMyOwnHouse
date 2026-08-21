@@ -60,7 +60,13 @@ def _separate_overlaps(boxes: np.ndarray, iterations: int = 100) -> tuple[np.nda
     """Greedy pairwise separation: pushes overlapping boxes apart along
     whichever axis has the smaller overlap, one pass at a time. Not globally
     optimal, but bounded and deterministic — a reasonable v1 cleanup, not a
-    claim of doing real geometric packing."""
+    claim of doing real geometric packing.
+
+    Re-clips to the unit square after every pass (not just once at the end,
+    outside this function) — otherwise this can "resolve" an overlap by
+    shoving a box outside [0, 1], report success, and then have that overlap
+    silently reappear the moment something clips it back into bounds later.
+    Resolved has to mean resolved-and-in-bounds, not resolved-by-cheating."""
     boxes = boxes.copy()
     n = len(boxes)
     for _ in range(iterations):
@@ -94,6 +100,7 @@ def _separate_overlaps(boxes: np.ndarray, iterations: int = 100) -> tuple[np.nda
                     else:
                         boxes[i, 1] += shift
                         boxes[j, 1] -= shift
+        boxes = _clip_to_unit_square(boxes)
         if not moved:
             return boxes, True
     return boxes, False
